@@ -70,6 +70,11 @@ internal static class PackageReferenceUpdater
             return;
         }
 
+        // Project files using PackageReference that target .NET Framework may have assembly binding redirect configs that need updating (e.g. app/web.config).
+        // For example, a .NET Framework 4.8.1 project migrated from packages.config to PackageReference will still have binding redirects.
+        //  - https://learn.microsoft.com/en-us/nuget/consume-packages/migrate-packages-config-to-package-reference
+        await UpdateBindingRedirectsAsync(buildFiles, logger);
+
         await SaveBuildFilesAsync(buildFiles, logger);
     }
 
@@ -636,6 +641,17 @@ internal static class PackageReferenceUpdater
         }
 
         return true;
+    }
+
+    private static async Task UpdateBindingRedirectsAsync(ImmutableArray<ProjectBuildFile> buildFiles, Logger logger)
+    {
+        foreach (var buildFile in buildFiles)
+        {
+            if (await BindingRedirectManager.UpdateBindingRedirectsAsync(buildFile))
+            {
+                logger.Log($"    Updated assembly binding redirect config for project [{buildFile.RelativePath}].");
+            }
+        }
     }
 
     private static async Task SaveBuildFilesAsync(ImmutableArray<ProjectBuildFile> buildFiles, Logger logger)

@@ -36,7 +36,7 @@ internal static class PackagesConfigUpdater
             return;
         }
 
-        logger.Log($"  Found '{NuGetHelper.PackagesConfigFileName}' style project; running update with NuGet.exe");
+        logger.Log($"  Found project using '{NuGetHelper.PackagesConfigFileName}' file; running update with NuGet.exe");
 
         // ensure local packages directory exists
         var projectBuildFile = ProjectBuildFile.Open(repoRootPath, projectPath);
@@ -94,11 +94,15 @@ internal static class PackagesConfigUpdater
         projectBuildFile = ProjectBuildFile.Open(repoRootPath, projectPath);
         projectBuildFile.NormalizeDirectorySeparatorsInProject();
 
-        // Update binding redirects
-        await BindingRedirectManager.UpdateBindingRedirectsAsync(projectBuildFile);
+        if (await BindingRedirectManager.UpdateBindingRedirectsAsync(projectBuildFile))
+        {
+            logger.Log($"    Updated assembly binding redirect config for project [{projectBuildFile.RelativePath}].");
+        }
 
-        logger.Log("    Writing project file back to disk");
-        await projectBuildFile.SaveAsync();
+        if (await projectBuildFile.SaveAsync())
+        {
+            logger.Log($"    Saved [{projectBuildFile.RelativePath}].");
+        }
     }
 
     private static void RunNugetUpdate(List<string> updateArgs, List<string> restoreArgs, string projectDirectory, Logger logger)

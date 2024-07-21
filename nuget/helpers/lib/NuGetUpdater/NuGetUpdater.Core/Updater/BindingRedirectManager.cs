@@ -18,13 +18,20 @@ internal static class BindingRedirectManager
     private static readonly XName DependentAssemblyName = AssemblyBinding.GetQualifiedName("dependentAssembly");
     private static readonly XName BindingRedirectName = AssemblyBinding.GetQualifiedName("bindingRedirect");
 
-    public static async ValueTask UpdateBindingRedirectsAsync(ProjectBuildFile projectBuildFile)
+    /// <summary>
+    /// Updates assembly binding redirects in the project file, if assembly binding redirects are currently configured.
+    /// This is only applicable to projects targeting .NET Framework.
+    ///  - https://learn.microsoft.com/en-us/dotnet/framework/configure-apps/redirect-assembly-versions
+    /// </summary>
+    /// <param name="projectBuildFile"></param>
+    /// <returns>True if binding redirects are configured for the project; otherwise, false</returns>
+    public static async ValueTask<bool> UpdateBindingRedirectsAsync(ProjectBuildFile projectBuildFile)
     {
         var configFile = await TryGetRuntimeConfigurationFile(projectBuildFile);
         if (configFile is null)
         {
             // no runtime config file so no need to add binding redirects
-            return;
+            return false;
         }
 
         var references = ExtractReferenceElements(projectBuildFile);
@@ -34,7 +41,7 @@ internal static class BindingRedirectManager
         if (!bindings.Any())
         {
             // no bindings to update
-            return;
+            return false;
         }
 
         var fileContent = AddBindingRedirects(configFile, bindings);
@@ -47,7 +54,7 @@ internal static class BindingRedirectManager
             AddConfigFileToProject(projectBuildFile, configFile);
         }
 
-        return;
+        return true;
 
         static List<(string Include, string HintPath)> ExtractReferenceElements(ProjectBuildFile projectBuildFile)
         {
