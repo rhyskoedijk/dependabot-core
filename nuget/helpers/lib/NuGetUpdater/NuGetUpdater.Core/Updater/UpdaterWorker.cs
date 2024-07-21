@@ -182,12 +182,9 @@ public class UpdaterWorker
 
         _logger.Log($"Updating project [{projectPath}]");
 
-        if (NuGetHelper.TryGetPackagesConfigFile(projectPath, out var packagesConfigPath))
-        {
-            await PackagesConfigUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, packagesConfigPath, _logger);
-        }
-
-        // Some repos use a mix of packages.config and PackageReference
-        await SdkPackageUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, isTransitive, _logger);
+        // Some repos use a mix of projects with packages.config and PackageReference, so run both updaters to ensure all scenarios are covered.
+        // Each updater will only run if the project file is using the respective package management format, so it is safe to call both updaters here.
+        await PackagesConfigUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, _logger);
+        await PackageReferenceUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, isTransitive, _logger);
     }
 }

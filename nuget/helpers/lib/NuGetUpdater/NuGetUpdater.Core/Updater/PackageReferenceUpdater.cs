@@ -6,7 +6,20 @@ using NuGet.Versioning;
 
 namespace NuGetUpdater.Core;
 
-internal static class SdkPackageUpdater
+/// <summary>
+/// Handles package updates for projects using <PackageReference> MSBuild items.
+///  - https://learn.microsoft.com/en-us/nuget/consume-packages/package-references-in-project-files
+/// This applies to both SDK-style and non-SDK-style projects (see remarks).
+///  - https://learn.microsoft.com/en-us/nuget/resources/check-project-format
+/// </summary>
+/// <remarks>
+/// By default, PackageReference is used for SDK-style projects targeting .NET Core/Standard.
+/// Non-SDK-style projects targeting .NET Framework also support PackageReference, but default to packages.config.
+/// ASP.NET apps targeting .NET Framework include only limited support for PackageReference.
+///  - https://learn.microsoft.com/en-us/nuget/resources/check-project-format
+///  - https://learn.microsoft.com/en-us/nuget/consume-packages/migrate-packages-config-to-package-reference
+/// </remarks>
+internal static class PackageReferenceUpdater
 {
     public static async Task UpdateDependencyAsync(
         string repoRootPath,
@@ -17,13 +30,21 @@ internal static class SdkPackageUpdater
         bool isTransitive,
         Logger logger)
     {
-        // SDK-style project, modify the XML directly
-        logger.Log("  Running for SDK-style project");
+        // PackageReference project; modify the XML directly
 
         (ImmutableArray<ProjectBuildFile> buildFiles, string[] tfms) = await MSBuildHelper.LoadBuildFilesAndTargetFrameworksAsync(repoRootPath, projectPath);
 
         // Get the set of all top-level dependencies in the current project
         var topLevelDependencies = MSBuildHelper.GetTopLevelPackageDependencyInfos(buildFiles).ToArray();
+        if (!topLevelDependencies.Any())
+        {
+            // Ignore this project; It doesn't use PackageReference dependencies, or has no dependencies
+            return;
+        }
+
+        logger.Log($"  Found project using 'PackageReference' MSBuild items; running direct XML update");
+
+        // Check if the dependency needs to be updated
         if (!await DoesDependencyRequireUpdateAsync(repoRootPath, projectPath, tfms, topLevelDependencies, dependencyName, newDependencyVersion, logger))
         {
             return;
