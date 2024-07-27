@@ -21,7 +21,7 @@ namespace NuGetUpdater.Core;
 /// </remarks>
 internal static class PackageReferenceUpdater
 {
-    public static async Task UpdateDependencyAsync(
+    public static async Task<ImmutableArray<ProjectBuildFile>> UpdateDependencyAsync(
         string repoRootPath,
         string projectPath,
         string dependencyName,
@@ -39,7 +39,7 @@ internal static class PackageReferenceUpdater
         if (!topLevelDependencies.Any())
         {
             // Ignore this project; It doesn't use PackageReference dependencies, or has no dependencies
-            return;
+            return default;
         }
 
         logger.Log($"  Found project using 'PackageReference' MSBuild items; running direct XML update");
@@ -47,7 +47,7 @@ internal static class PackageReferenceUpdater
         // Check if the dependency needs to be updated
         if (!await DoesDependencyRequireUpdateAsync(repoRootPath, projectPath, tfms, topLevelDependencies, dependencyName, newDependencyVersion, logger))
         {
-            return;
+            return default;
         }
 
         if (isTransitive)
@@ -59,7 +59,7 @@ internal static class PackageReferenceUpdater
             var peerDependencies = await GetUpdatedPeerDependenciesAsync(repoRootPath, projectPath, tfms, dependencyName, newDependencyVersion, logger);
             if (peerDependencies is null)
             {
-                return;
+                return default;
             }
 
             await UpdateTopLevelDepdendency(repoRootPath, buildFiles, tfms, dependencyName, previousDependencyVersion, newDependencyVersion, peerDependencies, logger);
@@ -67,15 +67,11 @@ internal static class PackageReferenceUpdater
 
         if (!await AreDependenciesCoherentAsync(repoRootPath, projectPath, dependencyName, logger, buildFiles, tfms))
         {
-            return;
+            return default;
         }
 
-        // Project files using PackageReference that target .NET Framework may have assembly binding redirect configs that need updating (e.g. app/web.config).
-        // For example, a .NET Framework 4.8.1 project migrated from packages.config to PackageReference will still have binding redirects.
-        //  - https://learn.microsoft.com/en-us/nuget/consume-packages/migrate-packages-config-to-package-reference
-        await UpdateBindingRedirectsAsync(buildFiles, logger);
-
         await SaveBuildFilesAsync(buildFiles, logger);
+        return buildFiles;
     }
 
     /// <summary>
@@ -641,17 +637,6 @@ internal static class PackageReferenceUpdater
         }
 
         return true;
-    }
-
-    private static async Task UpdateBindingRedirectsAsync(ImmutableArray<ProjectBuildFile> buildFiles, Logger logger)
-    {
-        foreach (var buildFile in buildFiles)
-        {
-            if (await BindingRedirectManager.UpdateBindingRedirectsAsync(buildFile))
-            {
-                logger.Log($"    Updated assembly binding redirect config for project [{buildFile.RelativePath}].");
-            }
-        }
     }
 
     private static async Task SaveBuildFilesAsync(ImmutableArray<ProjectBuildFile> buildFiles, Logger logger)

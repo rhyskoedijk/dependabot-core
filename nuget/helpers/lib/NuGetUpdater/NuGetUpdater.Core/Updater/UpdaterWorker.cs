@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Collections.ObjectModel;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -184,7 +186,22 @@ public class UpdaterWorker
 
         // Some repos use a mix of projects with packages.config and PackageReference, so run both updaters to ensure all scenarios are covered.
         // Each updater will only run if the project file is using the respective package management format, so it is safe to call both updaters here.
-        await PackagesConfigUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, _logger);
-        await PackageReferenceUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, isTransitive, _logger);
+        var updatedBuildFiles = new List<ProjectBuildFile>();
+        var updatedPackagesConfigFiles = await PackagesConfigUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, _logger);
+        if (!updatedPackagesConfigFiles.IsDefaultOrEmpty)
+        {
+            updatedBuildFiles.AddRange(updatedPackagesConfigFiles);
+        }
+        var updatedPackageReferenceFile = await PackageReferenceUpdater.UpdateDependencyAsync(repoRootPath, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, isTransitive, _logger);
+        if (!updatedPackageReferenceFile.IsDefaultOrEmpty)
+        {
+            updatedBuildFiles.AddRange(updatedPackageReferenceFile);
+        }
+        
+        // If any build files were updated, check for assembly binding redirects and update them where necessary.
+        if (updatedBuildFiles.Any())
+        {
+            await AssemblyBindingRedirectUpdater.UpdateBindingRedirectsAsync(repoRootPath, updatedBuildFiles.ToImmutableArray(), _logger);
+        }
     }
 }

@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Text;
 using System.Xml.Linq;
@@ -19,7 +20,7 @@ namespace NuGetUpdater.Core;
 /// </summary>
 internal static class PackagesConfigUpdater
 {
-    public static async Task UpdateDependencyAsync(
+    public static async Task<ImmutableArray<ProjectBuildFile>> UpdateDependencyAsync(
         string repoRootPath,
         string projectPath,
         string dependencyName,
@@ -33,7 +34,7 @@ internal static class PackagesConfigUpdater
         if (!NuGetHelper.TryGetPackagesConfigFile(projectPath, out var packagesConfigPath))
         {
             // Ignore this project; It does not contain a packages.config file
-            return;
+            return default;
         }
 
         logger.Log($"  Found project using '{NuGetHelper.PackagesConfigFileName}' file; running update with NuGet.exe");
@@ -44,7 +45,7 @@ internal static class PackagesConfigUpdater
         if (packagesSubDirectory is null)
         {
             logger.Log($"    Project [{projectPath}] does not reference this dependency.");
-            return;
+            return default;
         }
 
         logger.Log($"    Using packages directory [{packagesSubDirectory}] for project [{projectPath}].");
@@ -94,15 +95,12 @@ internal static class PackagesConfigUpdater
         projectBuildFile = ProjectBuildFile.Open(repoRootPath, projectPath);
         projectBuildFile.NormalizeDirectorySeparatorsInProject();
 
-        if (await BindingRedirectManager.UpdateBindingRedirectsAsync(projectBuildFile))
-        {
-            logger.Log($"    Updated assembly binding redirect config for project [{projectBuildFile.RelativePath}].");
-        }
-
         if (await projectBuildFile.SaveAsync())
         {
             logger.Log($"    Saved [{projectBuildFile.RelativePath}].");
         }
+
+        return [projectBuildFile];
     }
 
     private static void RunNugetUpdate(List<string> updateArgs, List<string> restoreArgs, string projectDirectory, Logger logger)
