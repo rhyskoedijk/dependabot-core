@@ -16,8 +16,12 @@ namespace NuGetUpdater.Core;
 
 /// <summary>
 /// Handles package updates for projects that use packages.config.
-/// https://learn.microsoft.com/en-us/nuget/reference/packages-config
 /// </summary>
+/// <remarks>
+/// packages.config can appear in non-SDK-style projects, but not in SDK-style projects.
+/// See: https://learn.microsoft.com/en-us/nuget/reference/packages-config
+///      https://learn.microsoft.com/en-us/nuget/resources/check-project-format
+/// <remarks>
 internal static class PackagesConfigUpdater
 {
     public static async Task<ImmutableArray<ProjectBuildFile>> UpdateDependencyAsync(
@@ -26,18 +30,12 @@ internal static class PackagesConfigUpdater
         string dependencyName,
         string previousDependencyVersion,
         string newDependencyVersion,
-        Logger logger
+        string packagesConfigPath,
+        ILogger logger
     )
     {
-        // packages.config project; Use NuGet.exe to perform update
-
-        if (!NuGetHelper.TryGetPackagesConfigFile(projectPath, out var packagesConfigPath))
-        {
-            // Ignore this project; It does not contain a packages.config file
-            return default;
-        }
-
-        logger.Log($"  Found project using '{NuGetHelper.PackagesConfigFileName}' file; running update with NuGet.exe");
+        // packages.config project; use NuGet.exe to perform update
+        logger.Log($"  Found '{NuGetHelper.PackagesConfigFileName}' project; running NuGet.exe update");
 
         // ensure local packages directory exists
         var projectBuildFile = ProjectBuildFile.Open(repoRootPath, projectPath);
@@ -103,7 +101,7 @@ internal static class PackagesConfigUpdater
         return [projectBuildFile];
     }
 
-    private static void RunNugetUpdate(List<string> updateArgs, List<string> restoreArgs, string projectDirectory, Logger logger)
+    private static void RunNugetUpdate(List<string> updateArgs, List<string> restoreArgs, string projectDirectory, ILogger logger)
     {
         var outputBuilder = new StringBuilder();
         var writer = new StringWriter(outputBuilder);
@@ -150,6 +148,7 @@ internal static class PackagesConfigUpdater
 
                     if (exitCodeAgain != 0)
                     {
+                        MSBuildHelper.ThrowOnMissingPackages(restoreOutput);
                         throw new Exception($"Unable to restore.\nOutput:\n${restoreOutput}\n");
                     }
 
@@ -158,6 +157,7 @@ internal static class PackagesConfigUpdater
 
                 MSBuildHelper.ThrowOnUnauthenticatedFeed(fullOutput);
                 MSBuildHelper.ThrowOnMissingFile(fullOutput);
+                MSBuildHelper.ThrowOnMissingPackages(fullOutput);
                 throw new Exception(fullOutput);
             }
         }

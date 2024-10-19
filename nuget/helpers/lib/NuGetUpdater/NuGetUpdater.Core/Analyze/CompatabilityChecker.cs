@@ -21,7 +21,7 @@ internal static class CompatibilityChecker
         PackageIdentity package,
         ImmutableArray<NuGetFramework> projectFrameworks,
         NuGetContext nugetContext,
-        Logger logger,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         var (isDevDependency, packageFrameworks) = await GetPackageInfoAsync(
@@ -37,7 +37,7 @@ internal static class CompatibilityChecker
         ImmutableArray<NuGetFramework> projectFrameworks,
         bool isDevDependency,
         ImmutableArray<NuGetFramework> packageFrameworks,
-        Logger logger)
+        ILogger logger)
     {
         // development dependencies are packages such as analyzers which need to be compatible with the compiler not the
         // project itself, but some packages that report themselves as development dependencies still contain target
@@ -84,24 +84,27 @@ internal static class CompatibilityChecker
         var reader = new NuspecReader(nuspecStream);
 
         var isDevDependency = reader.GetDevelopmentDependency();
+        var tfms = new HashSet<NuGetFramework>();
+        var dependencyGroups = reader.GetDependencyGroups().ToArray();
 
-        var tfms = reader.GetDependencyGroups()
-            .Select(d => d.TargetFramework)
-            .ToImmutableArray();
-        if (tfms.Length == 0)
+        foreach (var d in dependencyGroups)
         {
-            // If the nuspec doesn't have any dependency groups,
-            // try to get the TargetFramework from files in the lib folder.
             var libItems = (await readers.ContentReader.GetLibItemsAsync(cancellationToken)).ToList();
-            if (libItems.Count == 0)
+
+            foreach (var item in libItems)
             {
-                // If there is no lib folder in this package, then assume it is a dev dependency.
-                isDevDependency = true;
+                tfms.Add(item.TargetFramework);
             }
 
-            tfms = libItems.Select(item => item.TargetFramework)
-                .Distinct()
-                .ToImmutableArray();
+            if (!d.TargetFramework.IsAny)
+            {
+                tfms.Add(d.TargetFramework);
+            }
+        }
+
+        if (!tfms.Any())
+        {
+            tfms.Add(NuGetFramework.AnyFramework);
         }
 
         // The interfaces we given are not disposable but the underlying type can be.
@@ -109,7 +112,7 @@ internal static class CompatibilityChecker
         (readers.CoreReader as IDisposable)?.Dispose();
         (readers.ContentReader as IDisposable)?.Dispose();
 
-        return (isDevDependency, tfms);
+        return (isDevDependency, tfms.ToImmutableArray());
     }
 
     internal static PackageReaders ReadPackage(string tempPackagePath)

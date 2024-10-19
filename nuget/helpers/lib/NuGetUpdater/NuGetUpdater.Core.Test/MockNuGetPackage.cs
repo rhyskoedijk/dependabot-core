@@ -131,19 +131,14 @@ namespace NuGetUpdater.Core.Test
             );
         }
 
-        public static MockNuGetPackage CreateDotNetToolPackage(string id, string version, string targetFramework)
+        public static MockNuGetPackage CreateDotNetToolPackage(string id, string version, string targetFramework, XElement[]? additionalMetadata = null)
         {
+            var packageMetadata = new XElement("packageTypes", new XElement("packageType", new XAttribute("name", "DotnetTool")));
+            var allMetadata = new[] { packageMetadata }.Concat(additionalMetadata ?? []).ToArray();
             return new(
                 id,
                 version,
-                AdditionalMetadata:
-                [
-                    new XElement("packageTypes",
-                        new XElement("packageType",
-                            new XAttribute("name", "DotnetTool")
-                        )
-                    )
-                ],
+                AdditionalMetadata: allMetadata,
                 Files:
                 [
                     ($"tools/{targetFramework}/any/DotnetToolSettings.xml", Encoding.UTF8.GetBytes($"""
@@ -158,8 +153,10 @@ namespace NuGetUpdater.Core.Test
             );
         }
 
-        public static MockNuGetPackage CreateMSBuildSdkPackage(string id, string version, string? sdkPropsContent = null, string? sdkTargetsContent = null)
+        public static MockNuGetPackage CreateMSBuildSdkPackage(string id, string version, string? sdkPropsContent = null, string? sdkTargetsContent = null, XElement[]? additionalMetadata = null)
         {
+            var packageMetadata = new XElement("packageTypes", new XElement("packageType", new XAttribute("name", "MSBuildSdk")));
+            var allMetadata = new[] { packageMetadata }.Concat(additionalMetadata ?? []).ToArray();
             sdkPropsContent ??= """
                 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
                 </Project>
@@ -171,14 +168,7 @@ namespace NuGetUpdater.Core.Test
             return new(
                 id,
                 version,
-                AdditionalMetadata:
-                [
-                    new XElement("packageTypes",
-                        new XElement("packageType",
-                            new XAttribute("name", "MSBuildSdk")
-                        )
-                    )
-                ],
+                AdditionalMetadata: additionalMetadata,
                 Files:
                 [
                     ("Sdk/Sdk.props", Encoding.UTF8.GetBytes(sdkPropsContent)),
@@ -325,7 +315,7 @@ namespace NuGetUpdater.Core.Test
                     </Project>
                     """
                 );
-                var (exitCode, stdout, stderr) = ProcessEx.RunAsync("dotnet", $"msbuild {projectPath} /t:_ReportCurrentSdkVersion").Result;
+                var (exitCode, stdout, stderr) = ProcessEx.RunAsync("dotnet", ["msbuild", projectPath, "/t:_ReportCurrentSdkVersion"]).Result;
                 if (exitCode != 0)
                 {
                     throw new Exception($"Failed to report the current SDK version:\n{stdout}\n{stderr}");
@@ -401,6 +391,7 @@ namespace NuGetUpdater.Core.Test
             WellKnownReferencePackage("Microsoft.AspNetCore.App", "net6.0"),
             WellKnownReferencePackage("Microsoft.AspNetCore.App", "net7.0"),
             WellKnownReferencePackage("Microsoft.AspNetCore.App", "net8.0"),
+            WellKnownReferencePackage("Microsoft.AspNetCore.App", "net9.0"),
             WellKnownReferencePackage("Microsoft.NETCore.App", "net6.0",
             [
                 ("data/FrameworkList.xml", Encoding.UTF8.GetBytes("""
@@ -422,9 +413,17 @@ namespace NuGetUpdater.Core.Test
                     </FileList>
                     """))
             ]),
+            WellKnownReferencePackage("Microsoft.NETCore.App", "net9.0",
+            [
+                ("data/FrameworkList.xml", Encoding.UTF8.GetBytes("""
+                    <FileList TargetFrameworkIdentifier=".NETCoreApp" TargetFrameworkVersion="9.0" FrameworkName="Microsoft.NETCore.App" Name=".NET Runtime">
+                    </FileList>
+                    """))
+            ]),
             WellKnownReferencePackage("Microsoft.WindowsDesktop.App", "net6.0"),
             WellKnownReferencePackage("Microsoft.WindowsDesktop.App", "net7.0"),
             WellKnownReferencePackage("Microsoft.WindowsDesktop.App", "net8.0"),
+            WellKnownReferencePackage("Microsoft.WindowsDesktop.App", "net9.0"),
         ];
     }
 }

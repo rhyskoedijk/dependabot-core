@@ -6,6 +6,8 @@ require "sorbet-runtime"
 require "dependabot/dependency_change_builder"
 require "dependabot/updater/dependency_group_change_batch"
 require "dependabot/workspace"
+require "dependabot/updater/security_update_helpers"
+require "dependabot/notices"
 
 # This module contains the methods required to build a DependencyChange for
 # a single DependencyGroup.
@@ -22,6 +24,7 @@ module Dependabot
     module GroupUpdateCreation
       extend T::Sig
       extend T::Helpers
+      include PullRequestHelpers
 
       abstract!
 
@@ -52,10 +55,12 @@ module Dependabot
         )
         original_dependencies = dependency_snapshot.dependencies
 
+        # A list of notices that will be used in PR messages and/or sent to the dependabot github alerts.
+        notices = dependency_snapshot.notices
+
         Dependabot.logger.info("Updating the #{job.source.directory} directory.")
         group.dependencies.each do |dependency|
-          # We check dependency_snapshot.handled_dependencies instead of handled_dependencies_all_directories here
-          # because we still want to update a dependency if it's been updated in another manifest files,
+          # We still want to update a dependency if it's been updated in another manifest files,
           # but we should skip it if it's been updated in _the same_ manifest file
           if dependency_snapshot.handled_dependencies.include?(dependency.name)
             Dependabot.logger.info(
@@ -90,6 +95,8 @@ module Dependabot
             dep.name.casecmp(dependency.name)&.zero?
           end
 
+          next unless lead_dependency
+
           dependency_change = create_change_for(T.must(lead_dependency), updated_dependencies, dependency_files, group)
 
           # Move on to the next dependency using the existing files if we
@@ -107,13 +114,18 @@ module Dependabot
           job: job,
           updated_dependencies: group_changes.updated_dependencies,
           updated_dependency_files: group_changes.updated_dependency_files,
-          dependency_group: group
+          dependency_group: group,
+          notices: notices
         )
 
         if Experiments.enabled?("dependency_change_validation") && !dependency_change.all_have_previous_version?
           log_missing_previous_version(dependency_change)
           return nil
         end
+
+        # Send warning alerts to the API if any warning notices are present.
+        # Note that only notices with notice.show_alert set to true will be sent.
+        record_warning_notices(notices) if notices.any?
 
         dependency_change
       ensure
@@ -425,13 +437,6 @@ module Dependabot
       sig { params(group: Dependabot::DependencyGroup).returns(T::Boolean) }
       def pr_exists_for_dependency_group?(group)
         job.existing_group_pull_requests.any? { |pr| pr["dependency-group-name"] == group.name }
-      end
-
-      sig { params(group: Dependabot::DependencyGroup).returns(T::Array[T::Hash[String, String]]) }
-      def dependencies_in_existing_pr_for_group(group)
-        job.existing_group_pull_requests.find do |pr|
-          pr["dependency-group-name"] == group.name
-        end&.fetch("dependencies", [])
       end
 
       sig do

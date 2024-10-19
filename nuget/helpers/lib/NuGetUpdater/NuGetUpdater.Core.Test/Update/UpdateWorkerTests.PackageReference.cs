@@ -16,6 +16,7 @@ public partial class UpdateWorkerTests
         [InlineData("net472")]
         [InlineData("net7.0")]
         [InlineData("net8.0")]
+        [InlineData("net9.0")]
         public async Task UpdateVersionAttribute_InProjectFile_ForPackageReferenceInclude(string tfm)
         {
             // update Some.Package from 9.0.1 to 13.0.1
@@ -52,10 +53,13 @@ public partial class UpdateWorkerTests
             );
         }
 
-        [Fact]
-        public async Task UpdateVersionChildElement_InProjectFile_ForPackageReferenceInclude()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task UpdateVersionChildElement_InProjectFile_ForPackageReferenceIncludeTheory(bool useDependencySolver)
         {
             // update Some.Package from 9.0.1 to 13.0.1
+            using var _ = new DependencySolverEnvironment(useDependencySolver);
             await TestUpdateForProject("Some.Package", "9.0.1", "13.0.1",
                 packages:
                 [
@@ -86,6 +90,104 @@ public partial class UpdateWorkerTests
                           <Version>13.0.1</Version>
                         </PackageReference>
                       </ItemGroup>
+                    </Project>
+                    """
+              );
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task PeerDependenciesAreUpdatedEvenWhenNotExplicit(bool useDependencySolver)
+        {
+            using var _ = new DependencySolverEnvironment(useDependencySolver);
+            await TestUpdateForProject("Some.Package", "1.0.0", "2.0.0",
+                packages:
+                [
+                    MockNuGetPackage.CreateSimplePackage("Some.Package", "1.0.0", "net8.0", [(null, [("Transitive.Package", "[1.0.0]")])]),
+                    MockNuGetPackage.CreateSimplePackage("Some.Package", "2.0.0", "net8.0", [(null, [("Transitive.Package", "[2.0.0]")])]),
+                    MockNuGetPackage.CreateSimplePackage("Transitive.Package", "1.0.0", "net8.0"),
+                    MockNuGetPackage.CreateSimplePackage("Transitive.Package", "2.0.0", "net8.0"),
+                ],
+                projectFile: ("a/a.csproj", """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <TargetFramework>net8.0</TargetFramework>
+                        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+                      </PropertyGroup>
+                      <ItemGroup>
+                        <PackageReference Include="Some.Package" />
+                      </ItemGroup>
+                    </Project>
+                    """),
+                additionalFiles:
+                [
+                    ("Directory.Packages.props", """
+                        <Project>
+                          <ItemGroup>
+                            <PackageVersion Include="Some.Package" Version="1.0.0" />
+                            <PackageVersion Include="Transitive.Package" Version="1.0.0" />
+                          </ItemGroup>
+                        </Project>
+                        """)
+                ],
+                expectedProjectContents: """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <TargetFramework>net8.0</TargetFramework>
+                        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+                      </PropertyGroup>
+                      <ItemGroup>
+                        <PackageReference Include="Some.Package" />
+                      </ItemGroup>
+                    </Project>
+                    """,
+                additionalFilesExpected:
+                [
+                    ("Directory.Packages.props", """
+                        <Project>
+                          <ItemGroup>
+                            <PackageVersion Include="Some.Package" Version="2.0.0" />
+                            <PackageVersion Include="Transitive.Package" Version="2.0.0" />
+                          </ItemGroup>
+                        </Project>
+                        """)
+                ]
+            );
+        }
+
+        [Fact]
+        public async Task CallingResolveDependencyConflictsNew()
+        {
+            // update Microsoft.CodeAnalysis.Common from 4.9.2 to 4.10.0
+            using var _ = new DependencySolverEnvironment();
+            await TestUpdateForProject("Microsoft.CodeAnalysis.Common", "4.9.2", "4.10.0",
+                // initial
+                projectContents: $"""
+                    <Project Sdk="Microsoft.NET.Sdk">
+                        <PropertyGroup>
+                            <TargetFramework>net8.0</TargetFramework>
+                        </PropertyGroup>
+                        <ItemGroup>
+                            <PackageReference Include="Microsoft.CodeAnalysis.Compilers" Version="4.9.2" />
+                            <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="4.9.2" />
+                            <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.9.2" />
+                            <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic" Version="4.9.2" />
+                        </ItemGroup>
+                    </Project>
+                    """,
+                // expected
+                expectedProjectContents: $"""
+                    <Project Sdk="Microsoft.NET.Sdk">
+                        <PropertyGroup>
+                            <TargetFramework>net8.0</TargetFramework>
+                        </PropertyGroup>
+                        <ItemGroup>
+                            <PackageReference Include="Microsoft.CodeAnalysis.Compilers" Version="4.10.0" />
+                            <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="4.10.0" />
+                            <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.10.0" />
+                            <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic" Version="4.10.0" />
+                        </ItemGroup>
                     </Project>
                     """
               );
@@ -146,6 +248,7 @@ public partial class UpdateWorkerTests
                 projectContents: $"""
                     <Project Sdk="Microsoft.NET.Sdk">
                       <PropertyGroup>
+                        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
                         <TargetFramework>net8.0</TargetFramework>
                       </PropertyGroup>
                       <ItemGroup>
@@ -159,6 +262,7 @@ public partial class UpdateWorkerTests
                     (Path: "src/Project/Project.csproj", Content: """
                         <Project Sdk="Microsoft.NET.Sdk">
                           <PropertyGroup>
+                            <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
                             <TargetFramework>net8.0</TargetFramework>
                           </PropertyGroup>
                           <ItemGroup>
@@ -171,6 +275,7 @@ public partial class UpdateWorkerTests
                 expectedProjectContents: $"""
                     <Project Sdk="Microsoft.NET.Sdk">
                       <PropertyGroup>
+                        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
                         <TargetFramework>net8.0</TargetFramework>
                       </PropertyGroup>
                       <ItemGroup>
@@ -184,6 +289,7 @@ public partial class UpdateWorkerTests
                     (Path: "src/Project/Project.csproj", Content: """
                         <Project Sdk="Microsoft.NET.Sdk">
                           <PropertyGroup>
+                            <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
                             <TargetFramework>net8.0</TargetFramework>
                           </PropertyGroup>
                           <ItemGroup>
@@ -204,7 +310,7 @@ public partial class UpdateWorkerTests
                     MockNuGetPackage.CreateSimplePackage("Some.Package", "9.0.1", "net8.0"),
                     MockNuGetPackage.CreateSimplePackage("Some.Package", "13.0.1", "net8.0"),
                     // necessary for the `net8.0-windows10.0.19041.0` TFM
-                    new("Microsoft.Windows.SDK.NET.Ref", "10.0.19041.31", Files:
+                    new("Microsoft.Windows.SDK.NET.Ref", "10.0.19041.34", Files:
                     [
                         ("data/FrameworkList.xml", Encoding.UTF8.GetBytes("""
                             <FileList Name="Windows SDK .NET 6.0">
@@ -409,7 +515,7 @@ public partial class UpdateWorkerTests
             //
             // do the update
             //
-            UpdaterWorker worker = new(new(verbose: true));
+            UpdaterWorker worker = new(new TestLogger());
             await worker.RunAsync(tempDirectory.DirectoryPath, projectPath, "Some.Package", "1.0.0", "1.1.0", isTransitive: false);
 
             //
@@ -489,9 +595,12 @@ public partial class UpdateWorkerTests
             );
         }
 
-        [Fact]
-        public async Task AddPackageReference_InProjectFile_ForTransientDependency()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task AddPackageReference_InProjectFile_ForTransientDependency(bool useDependencySolver)
         {
+            using var _ = new DependencySolverEnvironment(useDependencySolver);
             // add transient package Some.Transient.Dependency from 5.0.1 to 5.0.2
             await TestUpdateForProject("Some.Transient.Dependency", "5.0.1", "5.0.2", isTransitive: true,
                 packages:
@@ -505,6 +614,7 @@ public partial class UpdateWorkerTests
                     <Project Sdk="Microsoft.NET.Sdk">
 
                       <PropertyGroup>
+                        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
                         <TargetFramework>net8.0</TargetFramework>
                       </PropertyGroup>
 
@@ -519,6 +629,7 @@ public partial class UpdateWorkerTests
                     <Project Sdk="Microsoft.NET.Sdk">
 
                       <PropertyGroup>
+                        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
                         <TargetFramework>net8.0</TargetFramework>
                       </PropertyGroup>
 
@@ -529,6 +640,129 @@ public partial class UpdateWorkerTests
 
                     </Project>
                     """
+            );
+        }
+
+        [Fact]
+        public async Task TransitiveDependencyCanBeAddedWithMismatchingSdk()
+        {
+            await TestUpdateForProject("Some.Transitive.Package", "1.0.0", "1.0.1", isTransitive: true,
+                packages:
+                [
+                    MockNuGetPackage.CreateSimplePackage("Some.Package", "1.0.0", "net8.0", [(null, [("Some.Transitive.Package", "1.0.0")])]),
+                    MockNuGetPackage.CreateSimplePackage("Some.Transitive.Package", "1.0.0", "net8.0"),
+                    MockNuGetPackage.CreateSimplePackage("Some.Transitive.Package", "1.0.1", "net8.0"),
+                ],
+                projectContents: """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+                        <TargetFramework>net8.0</TargetFramework>
+                      </PropertyGroup>
+                      <ItemGroup>
+                        <PackageReference Include="Some.Package" Version="1.0.0" />
+                      </ItemGroup>
+                    </Project>
+                    """,
+                additionalFiles:
+                [
+                    ("global.json", """
+                        {
+                          "sdk": {
+                            "version": "99.99.999" // this version doesn't match anything that's installed
+                          }
+                        }
+                        """)
+                ],
+                expectedProjectContents: """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+                        <TargetFramework>net8.0</TargetFramework>
+                      </PropertyGroup>
+                      <ItemGroup>
+                        <PackageReference Include="Some.Package" Version="1.0.0" />
+                        <PackageReference Include="Some.Transitive.Package" Version="1.0.1" />
+                      </ItemGroup>
+                    </Project>
+                    """
+            );
+        }
+
+        [Fact]
+        public async Task TransitiveDependencyCanBeAddedWithCustomMSBuildSdk()
+        {
+            await TestUpdateForProject("Some.Transitive.Package", "1.0.0", "1.0.1", isTransitive: true,
+                packages:
+                [
+                    MockNuGetPackage.CreateSimplePackage("Some.Package", "1.0.0", "net8.0", [(null, [("Some.Transitive.Package", "1.0.0")])]),
+                    MockNuGetPackage.CreateSimplePackage("Some.Transitive.Package", "1.0.0", "net8.0"),
+                    MockNuGetPackage.CreateSimplePackage("Some.Transitive.Package", "1.0.1", "net8.0"),
+                    MockNuGetPackage.CreateMSBuildSdkPackage("Custom.MSBuild.Sdk", "1.2.3"),
+                ],
+                projectContents: """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <TargetFramework>net8.0</TargetFramework>
+                      </PropertyGroup>
+                      <ItemGroup>
+                        <PackageReference Include="Some.Package" />
+                      </ItemGroup>
+                    </Project>
+                    """,
+                additionalFiles:
+                [
+                    ("Directory.Build.props", """
+                        <Project>
+                          <Import Project="Sdk.props" Sdk="Custom.MSBuild.Sdk" />
+                        </Project>
+                        """),
+                    ("Directory.Packages.props", """
+                        <Project>
+                          <PropertyGroup>
+                            <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+                          </PropertyGroup>
+                          <ItemGroup>
+                            <PackageVersion Include="Some.Package" Version="1.0.0" />
+                          </ItemGroup>
+                        </Project>
+                        """),
+                    ("global.json", """
+                        {
+                          "sdk": {
+                            "version": "99.99.999" // this version doesn't match anything that's installed
+                          },
+                          "msbuild-sdks": {
+                            "Custom.MSBuild.Sdk": "1.2.3"
+                          }
+                        }
+                        """)
+                ],
+                expectedProjectContents: """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <TargetFramework>net8.0</TargetFramework>
+                      </PropertyGroup>
+                      <ItemGroup>
+                        <PackageReference Include="Some.Package" />
+                        <PackageReference Include="Some.Transitive.Package" />
+                      </ItemGroup>
+                    </Project>
+                    """,
+                additionalFilesExpected:
+                [
+                    ("Directory.Packages.props", """
+                        <Project>
+                          <PropertyGroup>
+                            <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+                          </PropertyGroup>
+                          <ItemGroup>
+                            <PackageVersion Include="Some.Package" Version="1.0.0" />
+                            <PackageVersion Include="Some.Transitive.Package" Version="1.0.1" />
+                          </ItemGroup>
+                        </Project>
+                        """)
+                ]
             );
         }
 
@@ -2742,8 +2976,51 @@ public partial class UpdateWorkerTests
         }
 
         [Fact]
-        public async Task NoChange_IfThereAreIncoherentVersions()
+        public async Task UpdatingTransitiveDependencyWithNewSolverCanUpdateJustTheTopLevelPackage()
         {
+            // we've been asked to explicitly update a transitive dependency, but we can solve it by updating the top-level package instead
+            using var _ = new DependencySolverEnvironment();
+            await TestUpdateForProject("Transitive.Package", "1.0.0", "2.0.0",
+                isTransitive: true,
+                packages:
+                [
+                    MockNuGetPackage.CreateSimplePackage("Some.Package", "1.0.0", "net8.0", [("net8.0", [("Transitive.Package", "[1.0.0]")])]),
+                    MockNuGetPackage.CreateSimplePackage("Some.Package", "2.0.0", "net8.0", [("net8.0", [("Transitive.Package", "[2.0.0]")])]),
+                    MockNuGetPackage.CreateSimplePackage("Transitive.Package", "1.0.0", "net8.0"),
+                    MockNuGetPackage.CreateSimplePackage("Transitive.Package", "2.0.0", "net8.0"),
+                ],
+                projectContents: """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <TargetFramework>net8.0</TargetFramework>
+                        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+                      </PropertyGroup>
+                      <ItemGroup>
+                        <PackageReference Include="Some.Package" Version="1.0.0" />
+                      </ItemGroup>
+                    </Project>
+                    """,
+                expectedProjectContents: """
+                    <Project Sdk="Microsoft.NET.Sdk">
+                      <PropertyGroup>
+                        <TargetFramework>net8.0</TargetFramework>
+                        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+                      </PropertyGroup>
+                      <ItemGroup>
+                        <PackageReference Include="Some.Package" Version="2.0.0" />
+                      </ItemGroup>
+                    </Project>
+                    """
+            );
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task NoChange_IfThereAreIncoherentVersions(bool useDependencySolver)
+        {
+            using var _ = new DependencySolverEnvironment(useDependencySolver);
+
             // trying to update `Transitive.Dependency` to 1.1.0 would normally pull `Some.Package` from 1.0.0 to 1.1.0,
             // but the TFM doesn't allow it
             await TestNoChangeforProject("Transitive.Dependency", "1.0.0", "1.1.0",
@@ -2827,9 +3104,13 @@ public partial class UpdateWorkerTests
             );
         }
 
-        [Fact]
-        public async Task UnresolvablePropertyDoesNotStopOtherUpdates()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task UnresolvablePropertyDoesNotStopOtherUpdates(bool useDependencySolver)
         {
+            using var _ = new DependencySolverEnvironment(useDependencySolver);
+
             // the property `$(SomeUnresolvableProperty)` cannot be resolved
             await TestUpdateForProject("Some.Package", "7.0.1", "13.0.1",
                 packages:
@@ -2863,9 +3144,13 @@ public partial class UpdateWorkerTests
             );
         }
 
-        [Fact]
-        public async Task UpdatingPackageAlsoUpdatesAnythingWithADependencyOnTheUpdatedPackage()
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task UpdatingPackageAlsoUpdatesAnythingWithADependencyOnTheUpdatedPackage(bool useDependencySolver)
         {
+            using var _ = new DependencySolverEnvironment(useDependencySolver);
+
             // updating Some.Package from 3.3.30 requires that Some.Package.Extensions also be updated
             await TestUpdateForProject("Some.Package", "3.3.30", "3.4.3",
                 packages:

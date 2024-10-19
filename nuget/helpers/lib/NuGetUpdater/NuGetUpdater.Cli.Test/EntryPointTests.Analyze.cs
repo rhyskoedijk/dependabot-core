@@ -1,8 +1,10 @@
 using System.Text;
+using System.Text.Json;
 using System.Xml.Linq;
 
 using NuGetUpdater.Core;
 using NuGetUpdater.Core.Analyze;
+using NuGetUpdater.Core.Discover;
 using NuGetUpdater.Core.Test;
 using NuGetUpdater.Core.Test.Analyze;
 using NuGetUpdater.Core.Test.Update;
@@ -32,7 +34,6 @@ public partial class EntryPointTests
                     Path.Join(path, "Some.Package.json"),
                     "--analysis-folder-path",
                     Path.Join(path, AnalyzeWorker.AnalysisDirectoryName),
-                    "--verbose",
                 ],
                 packages: [
                     MockNuGetPackage.CreateSimplePackage("Some.Package", "1.0.0", "net8.0", additionalMetadata: [repositoryXml]),
@@ -134,6 +135,177 @@ public partial class EntryPointTests
             );
         }
 
+        [Fact]
+        public async Task DotNetToolsJsonCanBeAnalyzed()
+        {
+            var repoMetadata = XElement.Parse("""<repository type="git" url="https://nuget.example.com/some-global-tool" />""");
+            await RunAsync(path =>
+                [
+                    "analyze",
+                    "--repo-root",
+                    path,
+                    "--discovery-file-path",
+                    Path.Join(path, "discovery.json"),
+                    "--dependency-file-path",
+                    Path.Join(path, "some-global-tool.json"),
+                    "--analysis-folder-path",
+                    Path.Join(path, AnalyzeWorker.AnalysisDirectoryName),
+                ],
+                packages:
+                [
+                    MockNuGetPackage.CreateDotNetToolPackage("some-global-tool", "1.0.0", "net8.0", additionalMetadata: [repoMetadata]),
+                    MockNuGetPackage.CreateDotNetToolPackage("some-global-tool", "1.1.0", "net8.0", additionalMetadata: [repoMetadata]),
+                ],
+                dependencyName: "some-global-tool",
+                initialFiles:
+                [
+                    (".config/dotnet-tools.json", """
+                        {
+                          "version": 1,
+                          "isRoot": true,
+                          "tools": {
+                            "some-global-tool": {
+                              "version": "1.0.0",
+                              "commands": [
+                                "some-global-tool"
+                              ]
+                            }
+                          }
+                        }
+                        """),
+                    ("discovery.json", """
+                        {
+                          "Path": "",
+                          "IsSuccess": true,
+                          "Projects": [],
+                          "DotNetToolsJson": {
+                            "FilePath": ".config/dotnet-tools.json",
+                            "IsSuccess": true,
+                            "Dependencies": [
+                              {
+                                "Name": "some-global-tool",
+                                "Version": "1.0.0",
+                                "Type": "DotNetTool",
+                                "EvaluationResult": null,
+                                "TargetFrameworks": null,
+                                "IsDevDependency": false,
+                                "IsDirect": false,
+                                "IsTransitive": false,
+                                "IsOverride": false,
+                                "IsUpdate": false,
+                                "InfoUrl": null
+                              }
+                            ]
+                          }
+                        }
+                        """),
+                    ("some-global-tool.json", """
+                        {
+                          "Name": "some-global-tool",
+                          "Version": "1.0.0",
+                          "IsVulnerable": false,
+                          "IgnoredVersions": [],
+                          "Vulnerabilities": []
+                        }
+                        """),
+                ],
+                expectedResult: new()
+                {
+                    UpdatedVersion = "1.1.0",
+                    CanUpdate = true,
+                    VersionComesFromMultiDependencyProperty = false,
+                    UpdatedDependencies =
+                    [
+                        new Dependency("some-global-tool", "1.1.0", DependencyType.DotNetTool, TargetFrameworks: null, IsDirect: true, InfoUrl: "https://nuget.example.com/some-global-tool")
+                    ],
+                }
+            );
+        }
+
+        [Fact]
+        public async Task GlobalJsonCanBeAnalyzed()
+        {
+            var repoMetadata = XElement.Parse("""<repository type="git" url="https://nuget.example.com/some.msbuild.sdk" />""");
+            await RunAsync(path =>
+                [
+                    "analyze",
+                    "--repo-root",
+                    path,
+                    "--discovery-file-path",
+                    Path.Join(path, "discovery.json"),
+                    "--dependency-file-path",
+                    Path.Join(path, "Some.MSBuild.Sdk.json"),
+                    "--analysis-folder-path",
+                    Path.Join(path, AnalyzeWorker.AnalysisDirectoryName),
+                ],
+                packages:
+                [
+                    MockNuGetPackage.CreateMSBuildSdkPackage("Some.MSBuild.Sdk", "1.0.0", "net8.0", additionalMetadata: [repoMetadata]),
+                    MockNuGetPackage.CreateMSBuildSdkPackage("Some.MSBuild.Sdk", "1.1.0", "net8.0", additionalMetadata: [repoMetadata]),
+                ],
+                dependencyName: "Some.MSBuild.Sdk",
+                initialFiles:
+                [
+                    ("global.json", """
+                        {
+                          "sdk": {
+                            "version": "8.0.300",
+                            "rollForward": "latestPatch"
+                          },
+                          "msbuild-sdks": {
+                            "Some.MSBuild.Sdk": "1.0.0"
+                          }
+                        }
+                        """),
+                    ("discovery.json", """
+                        {
+                          "Path": "",
+                          "IsSuccess": true,
+                          "Projects": [],
+                          "GlobalJson": {
+                            "FilePath": "global.json",
+                            "IsSuccess": true,
+                            "Dependencies": [
+                              {
+                                "Name": "Some.MSBuild.Sdk",
+                                "Version": "1.0.0",
+                                "Type": "MSBuildSdk",
+                                "EvaluationResult": null,
+                                "TargetFrameworks": null,
+                                "IsDevDependency": false,
+                                "IsDirect": false,
+                                "IsTransitive": false,
+                                "IsOverride": false,
+                                "IsUpdate": false,
+                                "InfoUrl": null
+                              }
+                            ]
+                          }
+                        }
+                        """),
+                    ("Some.MSBuild.Sdk.json", """
+                        {
+                          "Name": "Some.MSBuild.Sdk",
+                          "Version": "1.0.0",
+                          "IsVulnerable": false,
+                          "IgnoredVersions": [],
+                          "Vulnerabilities": []
+                        }
+                        """),
+                ],
+                expectedResult: new()
+                {
+                    UpdatedVersion = "1.1.0",
+                    CanUpdate = true,
+                    VersionComesFromMultiDependencyProperty = false,
+                    UpdatedDependencies =
+                    [
+                        new Dependency("Some.MSBuild.Sdk", "1.1.0", DependencyType.MSBuildSdk, TargetFrameworks: null, IsDirect: true, InfoUrl: "https://nuget.example.com/some.msbuild.sdk")
+                    ],
+                }
+            );
+        }
+
         private static async Task RunAsync(Func<string, string[]> getArgs, string dependencyName, TestFile[] initialFiles, ExpectedAnalysisResult expectedResult, MockNuGetPackage[]? packages = null)
         {
             var actualResult = await RunAnalyzerAsync(dependencyName, initialFiles, async path =>
@@ -161,6 +333,11 @@ public partial class EntryPointTests
                     Console.SetOut(originalOut);
                     Console.SetError(originalErr);
                 }
+
+                var resultPath = Path.Join(path, AnalyzeWorker.AnalysisDirectoryName, $"{dependencyName}.json");
+                var resultJson = await File.ReadAllTextAsync(resultPath);
+                var resultObject = JsonSerializer.Deserialize<AnalysisResult>(resultJson, DiscoveryWorker.SerializerOptions);
+                return resultObject!;
             });
 
             ValidateAnalysisResult(expectedResult, actualResult);

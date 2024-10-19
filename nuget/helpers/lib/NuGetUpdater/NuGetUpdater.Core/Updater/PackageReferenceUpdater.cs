@@ -7,17 +7,15 @@ using NuGet.Versioning;
 namespace NuGetUpdater.Core;
 
 /// <summary>
-/// Handles package updates for projects using <PackageReference> MSBuild items.
-///  - https://learn.microsoft.com/en-us/nuget/consume-packages/package-references-in-project-files
-/// This applies to both SDK-style and non-SDK-style projects (see remarks).
-///  - https://learn.microsoft.com/en-us/nuget/resources/check-project-format
+/// Handles package updates for projects containing `<PackageReference>` MSBuild items.
 /// </summary>
 /// <remarks>
-/// By default, PackageReference is used for SDK-style projects targeting .NET Core/Standard.
-/// Non-SDK-style projects targeting .NET Framework also support PackageReference, but default to packages.config.
-/// ASP.NET apps targeting .NET Framework include only limited support for PackageReference.
-///  - https://learn.microsoft.com/en-us/nuget/resources/check-project-format
-///  - https://learn.microsoft.com/en-us/nuget/consume-packages/migrate-packages-config-to-package-reference
+/// PackageReference items can appear in both SDK-style AND non-SDK-style project files.
+/// By default, PackageReference is used by [SDK-style] projects targeting .NET Core, .NET Standard, and UWP.
+/// By default, packages.config is used by [non-SDK-style] projects targeting .NET Framework; However, they can be migrated to PackageReference too.
+/// See: https://learn.microsoft.com/en-us/nuget/consume-packages/package-references-in-project-files#project-type-support
+///      https://learn.microsoft.com/en-us/nuget/consume-packages/migrate-packages-config-to-package-reference
+///      https://learn.microsoft.com/en-us/nuget/resources/check-project-format
 /// </remarks>
 internal static class PackageReferenceUpdater
 {
@@ -28,41 +26,40 @@ internal static class PackageReferenceUpdater
         string previousDependencyVersion,
         string newDependencyVersion,
         bool isTransitive,
-        Logger logger)
+        ILogger logger)
     {
         // PackageReference project; modify the XML directly
+        logger.Log("  Running 'PackageReference' project direct XML update");
 
         (ImmutableArray<ProjectBuildFile> buildFiles, string[] tfms) = await MSBuildHelper.LoadBuildFilesAndTargetFrameworksAsync(repoRootPath, projectPath);
 
         // Get the set of all top-level dependencies in the current project
         var topLevelDependencies = MSBuildHelper.GetTopLevelPackageDependencyInfos(buildFiles).ToArray();
-        if (!topLevelDependencies.Any())
-        {
-            // Ignore this project; It doesn't use PackageReference dependencies, or has no dependencies
-            return default;
-        }
-
-        logger.Log($"  Found project using 'PackageReference' MSBuild items; running direct XML update");
-
-        // Check if the dependency needs to be updated
         if (!await DoesDependencyRequireUpdateAsync(repoRootPath, projectPath, tfms, topLevelDependencies, dependencyName, newDependencyVersion, logger))
         {
             return default;
         }
 
-        if (isTransitive)
+        var peerDependencies = await GetUpdatedPeerDependenciesAsync(repoRootPath, projectPath, tfms, dependencyName, newDependencyVersion, logger);
+        if (MSBuildHelper.UseNewDependencySolver())
         {
-            await UpdateTransitiveDependencyAsnyc(projectPath, dependencyName, newDependencyVersion, buildFiles, logger);
+            await UpdateDependencyWithConflictResolution(repoRootPath, buildFiles, tfms, projectPath, dependencyName, previousDependencyVersion, newDependencyVersion, isTransitive, peerDependencies, logger);
         }
         else
         {
-            var peerDependencies = await GetUpdatedPeerDependenciesAsync(repoRootPath, projectPath, tfms, dependencyName, newDependencyVersion, logger);
-            if (peerDependencies is null)
+            if (isTransitive)
             {
-                return default;
+                await UpdateTransitiveDependencyAsync(repoRootPath, projectPath, dependencyName, newDependencyVersion, buildFiles, logger);
             }
+            else
+            {
+                if (peerDependencies is null)
+                {
+                    return;
+                }
 
-            await UpdateTopLevelDepdendency(repoRootPath, buildFiles, tfms, dependencyName, previousDependencyVersion, newDependencyVersion, peerDependencies, logger);
+                await UpdateTopLevelDepdendency(repoRootPath, buildFiles, tfms, dependencyName, previousDependencyVersion, newDependencyVersion, peerDependencies, logger);
+            }
         }
 
         if (!await AreDependenciesCoherentAsync(repoRootPath, projectPath, dependencyName, logger, buildFiles, tfms))
@@ -72,6 +69,61 @@ internal static class PackageReferenceUpdater
 
         await SaveBuildFilesAsync(buildFiles, logger);
         return buildFiles;
+    }
+
+    public static async Task UpdateDependencyWithConflictResolution(
+        string repoRootPath,
+        ImmutableArray<ProjectBuildFile> buildFiles,
+        string[] targetFrameworks,
+        string projectPath,
+        string dependencyName,
+        string previousDependencyVersion,
+        string newDependencyVersion,
+        bool isTransitive,
+        IDictionary<string, string> peerDependencies,
+        ILogger logger)
+    {
+        var topLevelDependencies = MSBuildHelper.GetTopLevelPackageDependencyInfos(buildFiles).ToArray();
+        var isDependencyTopLevel = topLevelDependencies.Any(d => d.Name.Equals(dependencyName, StringComparison.OrdinalIgnoreCase));
+        var dependenciesToUpdate = new[] { new Dependency(dependencyName, newDependencyVersion, DependencyType.PackageReference) };
+
+        // update the initial dependency...
+        TryUpdateDependencyVersion(buildFiles, dependencyName, previousDependencyVersion, newDependencyVersion, logger);
+
+        // ...and the peer dependencies...
+        foreach (var (packageName, packageVersion) in peerDependencies.Where(kvp => string.Compare(kvp.Key, dependencyName, StringComparison.OrdinalIgnoreCase) != 0))
+        {
+            TryUpdateDependencyVersion(buildFiles, packageName, previousDependencyVersion: null, newDependencyVersion: packageVersion, logger);
+        }
+
+        // ...and everything else
+        foreach (var projectFile in buildFiles)
+        {
+            foreach (var tfm in targetFrameworks)
+            {
+                var resolvedDependencies = await MSBuildHelper.ResolveDependencyConflicts(repoRootPath, projectFile.Path, tfm, topLevelDependencies, dependenciesToUpdate, logger);
+                if (resolvedDependencies is null)
+                {
+                    logger.Log($"    Unable to resolve dependency conflicts for {projectFile.Path}.");
+                    continue;
+                }
+
+                var isDependencyInResolutionSet = resolvedDependencies.Any(d => d.Name.Equals(dependencyName, StringComparison.OrdinalIgnoreCase));
+                if (isTransitive && !isDependencyTopLevel && isDependencyInResolutionSet)
+                {
+                    // a transitive dependency had to be pinned; add it here
+                    await UpdateTransitiveDependencyAsync(repoRootPath, projectPath, dependencyName, newDependencyVersion, buildFiles, logger);
+                }
+
+                // update all resolved dependencies that aren't the initial dependency
+                foreach (var resolvedDependency in resolvedDependencies
+                                                    .Where(d => !d.Name.Equals(dependencyName, StringComparison.OrdinalIgnoreCase))
+                                                    .Where(d => d.Version is not null))
+                {
+                    TryUpdateDependencyVersion(buildFiles, resolvedDependency.Name, previousDependencyVersion: null, newDependencyVersion: resolvedDependency.Version!, logger);
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -85,7 +137,7 @@ internal static class PackageReferenceUpdater
         Dependency[] topLevelDependencies,
         string dependencyName,
         string newDependencyVersion,
-        Logger logger)
+        ILogger logger)
     {
         var newDependencyNuGetVersion = NuGetVersion.Parse(newDependencyVersion);
 
@@ -145,7 +197,7 @@ internal static class PackageReferenceUpdater
         return true;
     }
 
-    private static async Task UpdateTransitiveDependencyAsnyc(string projectPath, string dependencyName, string newDependencyVersion, ImmutableArray<ProjectBuildFile> buildFiles, Logger logger)
+    private static async Task UpdateTransitiveDependencyAsync(string repoRootPath, string projectPath, string dependencyName, string newDependencyVersion, ImmutableArray<ProjectBuildFile> buildFiles, ILogger logger)
     {
         var directoryPackagesWithPinning = buildFiles.OfType<ProjectBuildFile>()
             .FirstOrDefault(bf => IsCpmTransitivePinningEnabled(bf));
@@ -155,7 +207,7 @@ internal static class PackageReferenceUpdater
         }
         else
         {
-            await AddTransitiveDependencyAsync(projectPath, dependencyName, newDependencyVersion, logger);
+            await AddTransitiveDependencyAsync(repoRootPath, projectPath, dependencyName, newDependencyVersion, logger);
         }
     }
 
@@ -181,7 +233,7 @@ internal static class PackageReferenceUpdater
         return isTransitivePinningEnabled is not null && string.Equals(isTransitivePinningEnabled, "true", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void PinTransitiveDependency(ProjectBuildFile directoryPackages, string dependencyName, string newDependencyVersion, Logger logger)
+    private static void PinTransitiveDependency(ProjectBuildFile directoryPackages, string dependencyName, string newDependencyVersion, ILogger logger)
     {
         var existingPackageVersionElement = directoryPackages.ItemNodes
             .Where(e => e.Name.Equals("PackageVersion", StringComparison.OrdinalIgnoreCase) &&
@@ -244,17 +296,21 @@ internal static class PackageReferenceUpdater
         directoryPackages.Update(updatedXml);
     }
 
-    private static async Task AddTransitiveDependencyAsync(string projectPath, string dependencyName, string newDependencyVersion, Logger logger)
+    private static async Task AddTransitiveDependencyAsync(string repoRootPath, string projectPath, string dependencyName, string newDependencyVersion, ILogger logger)
     {
-        logger.Log($"    Adding [{dependencyName}/{newDependencyVersion}] as a top-level package reference.");
-
-        // see https://learn.microsoft.com/nuget/consume-packages/install-use-packages-dotnet-cli
-        var (exitCode, stdout, stderr) = await ProcessEx.RunAsync("dotnet", $"add {projectPath} package {dependencyName} --version {newDependencyVersion}", workingDirectory: Path.GetDirectoryName(projectPath));
-        MSBuildHelper.ThrowOnUnauthenticatedFeed(stdout);
-        if (exitCode != 0)
+        var projectDirectory = Path.GetDirectoryName(projectPath)!;
+        await MSBuildHelper.SidelineGlobalJsonAsync(projectDirectory, repoRootPath, async () =>
         {
-            logger.Log($"    Transitive dependency [{dependencyName}/{newDependencyVersion}] was not added.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}");
-        }
+            logger.Log($"    Adding [{dependencyName}/{newDependencyVersion}] as a top-level package reference.");
+
+            // see https://learn.microsoft.com/nuget/consume-packages/install-use-packages-dotnet-cli
+            var (exitCode, stdout, stderr) = await ProcessEx.RunAsync("dotnet", ["add", projectPath, "package", dependencyName, "--version", newDependencyVersion], workingDirectory: projectDirectory);
+            MSBuildHelper.ThrowOnUnauthenticatedFeed(stdout);
+            if (exitCode != 0)
+            {
+                logger.Log($"    Transitive dependency [{dependencyName}/{newDependencyVersion}] was not added.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}");
+            }
+        }, logger, retainMSBuildSdks: true);
     }
 
     /// <summary>
@@ -267,7 +323,7 @@ internal static class PackageReferenceUpdater
         string[] tfms,
         string dependencyName,
         string newDependencyVersion,
-        Logger logger)
+        ILogger logger)
     {
         var newDependency = new[] { new Dependency(dependencyName, newDependencyVersion, DependencyType.Unknown) };
         var tfmsAndDependencies = new Dictionary<string, Dependency[]>();
@@ -322,8 +378,9 @@ internal static class PackageReferenceUpdater
         string previousDependencyVersion,
         string newDependencyVersion,
         IDictionary<string, string> peerDependencies,
-        Logger logger)
+        ILogger logger)
     {
+        // update dependencies...
         var result = TryUpdateDependencyVersion(buildFiles, dependencyName, previousDependencyVersion, newDependencyVersion, logger);
         if (result == UpdateResult.NotFound)
         {
@@ -336,13 +393,13 @@ internal static class PackageReferenceUpdater
             TryUpdateDependencyVersion(buildFiles, packageName, previousDependencyVersion: null, newDependencyVersion: packageVersion, logger);
         }
 
-        // now make all dependency requirements coherent
+        // ...and make them all coherent
         Dependency[] updatedTopLevelDependencies = MSBuildHelper.GetTopLevelPackageDependencyInfos(buildFiles).ToArray();
         foreach (ProjectBuildFile projectFile in buildFiles)
         {
             foreach (string tfm in targetFrameworks)
             {
-                Dependency[]? resolvedDependencies = await MSBuildHelper.ResolveDependencyConflicts(repoRootPath, projectFile.Path, tfm, updatedTopLevelDependencies, logger);
+                var resolvedDependencies = await MSBuildHelper.ResolveDependencyConflictsWithBruteForce(repoRootPath, projectFile.Path, tfm, updatedTopLevelDependencies, logger);
                 if (resolvedDependencies is null)
                 {
                     logger.Log($"    Unable to resolve dependency conflicts for {projectFile.Path}.");
@@ -353,7 +410,7 @@ internal static class PackageReferenceUpdater
                 var specificResolvedDependency = resolvedDependencies.Where(d => d.Name.Equals(dependencyName, StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
                 if (specificResolvedDependency is null)
                 {
-                    logger.Log($"    Unable resolve requested dependency for {dependencyName} in {projectFile.Path}.");
+                    logger.Log($"    Unable to resolve requested dependency for {dependencyName} in {projectFile.Path}.");
                     continue;
                 }
 
@@ -363,7 +420,7 @@ internal static class PackageReferenceUpdater
                     continue;
                 }
 
-                // update all other dependencies
+                // update all versions
                 foreach (Dependency resolvedDependency in resolvedDependencies
                                                           .Where(d => !d.Name.Equals(dependencyName, StringComparison.OrdinalIgnoreCase))
                                                           .Where(d => d.Version is not null))
@@ -379,7 +436,7 @@ internal static class PackageReferenceUpdater
         string dependencyName,
         string? previousDependencyVersion,
         string newDependencyVersion,
-        Logger logger)
+        ILogger logger)
     {
         var foundCorrect = false;
         var foundUnsupported = false;
@@ -622,7 +679,7 @@ internal static class PackageReferenceUpdater
                 StringComparison.OrdinalIgnoreCase) &&
             (e.GetAttributeOrSubElementValue("Version", StringComparison.OrdinalIgnoreCase) ?? e.GetAttributeOrSubElementValue("VersionOverride", StringComparison.OrdinalIgnoreCase)) is not null);
 
-    private static async Task<bool> AreDependenciesCoherentAsync(string repoRootPath, string projectPath, string dependencyName, Logger logger, ImmutableArray<ProjectBuildFile> buildFiles, string[] tfms)
+    private static async Task<bool> AreDependenciesCoherentAsync(string repoRootPath, string projectPath, string dependencyName, ILogger logger, ImmutableArray<ProjectBuildFile> buildFiles, string[] tfms)
     {
         var updatedTopLevelDependencies = MSBuildHelper.GetTopLevelPackageDependencyInfos(buildFiles).ToArray();
         foreach (var tfm in tfms)
@@ -639,7 +696,7 @@ internal static class PackageReferenceUpdater
         return true;
     }
 
-    private static async Task SaveBuildFilesAsync(ImmutableArray<ProjectBuildFile> buildFiles, Logger logger)
+    private static async Task SaveBuildFilesAsync(ImmutableArray<ProjectBuildFile> buildFiles, ILogger logger)
     {
         foreach (var buildFile in buildFiles)
         {

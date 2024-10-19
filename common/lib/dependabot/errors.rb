@@ -179,6 +179,15 @@ module Dependabot
         "error-type": "git_dependencies_not_reachable",
         "error-detail": { "dependency-urls": error.dependency_urls }
       }
+    when Dependabot::ToolVersionNotSupported
+      {
+        "error-type": "tool_version_not_supported",
+        "error-detail": {
+          "tool-name": error.tool_name,
+          "detected-version": error.detected_version,
+          "supported-versions": error.supported_versions
+        }
+      }
     when Dependabot::MisconfiguredTooling
       {
         "error-type": "misconfigured_tooling",
@@ -217,6 +226,11 @@ module Dependabot
           "error-message": error.message
         }
       }
+    when Dependabot::OutOfDisk
+      {
+        "error-type": "out_of_disk",
+        "error-detail": {}
+      }
     when Dependabot::GoModulePathMismatch
       {
         "error-type": "go_module_path_mismatch",
@@ -225,6 +239,24 @@ module Dependabot
           "discovered-path": error.discovered_path,
           "go-mod": error.go_mod
         }
+      }
+    when Dependabot::UpdateNotPossible
+      {
+        "error-type": "update_not_possible",
+        "error-detail": {
+          dependencies: error.dependencies
+        }
+      }
+    when BadRequirementError
+      {
+        "error-type": "illformed_requirement",
+        "error-detail": { message: error.message }
+      }
+    when RegistryError
+      {
+        "error-type": "registry_error",
+        "error-detail": { status: error.status,
+                          msg: error.message }
       }
     when
       IncompatibleCPU,
@@ -499,6 +531,8 @@ module Dependabot
 
   class DependencyFileNotResolvable < DependabotError; end
 
+  class BadRequirementError < Gem::Requirement::BadRequirementError; end
+
   #######################
   # Source level errors #
   #######################
@@ -591,6 +625,19 @@ module Dependabot
     end
   end
 
+  class RegistryError < DependabotError
+    extend T::Sig
+
+    sig { returns(Integer) }
+    attr_reader :status
+
+    sig { params(status: Integer, msg: String).void }
+    def initialize(status, msg)
+      @status = status
+      super(msg)
+    end
+  end
+
   # Useful for JS file updaters, where the registry API sometimes returns
   # different results to the actual update process
   class InconsistentRegistryResponse < DependabotError; end
@@ -598,6 +645,21 @@ module Dependabot
   ###########################
   # Dependency level errors #
   ###########################
+
+  class UpdateNotPossible < DependabotError
+    extend T::Sig
+
+    sig { returns(T::Array[String]) }
+    attr_reader :dependencies
+
+    sig { params(dependencies: T::Array[String]).void }
+    def initialize(dependencies)
+      @dependencies = dependencies
+
+      msg = "The following dependencies could not be updated: #{@dependencies.join(', ')}"
+      super(msg)
+    end
+  end
 
   class GitDependenciesNotReachable < DependabotError
     extend T::Sig

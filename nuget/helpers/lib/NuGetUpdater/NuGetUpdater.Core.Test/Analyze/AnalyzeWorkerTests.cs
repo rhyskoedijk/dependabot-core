@@ -268,6 +268,46 @@ public partial class AnalyzeWorkerTests : AnalyzeWorkerTestBase
         await TestAnalyzeAsync(
             packages:
             [
+                // no packages listed
+            ],
+            discovery: new()
+            {
+                Path = "/",
+                Projects = [
+                    new()
+                    {
+                        FilePath = "./project.csproj",
+                        TargetFrameworks = ["net8.0"],
+                        Dependencies = [
+                            new("Some.Package", "1.0.0", DependencyType.PackageReference), // this was found in the source, but doesn't exist in any feed
+                        ],
+                    },
+                ],
+            },
+            dependencyInfo: new()
+            {
+                Name = "Some.Package",
+                Version = "1.0.0",
+                IgnoredVersions = [],
+                IsVulnerable = false,
+                Vulnerabilities = [],
+            },
+            expectedResult: new()
+            {
+                UpdatedVersion = "1.0.0",
+                CanUpdate = false,
+                VersionComesFromMultiDependencyProperty = false,
+                UpdatedDependencies = [],
+            }
+        );
+    }
+
+    [Fact]
+    public async Task ReturnsUpToDate_ForIgnoredRequirements()
+    {
+        await TestAnalyzeAsync(
+            packages:
+            [
                 MockNuGetPackage.CreateSimplePackage("Some.Package", "4.0.1", "net8.0", [(null, [("Some.Transitive.Dependency", "[4.0.1]")])]), // initially this
                 MockNuGetPackage.CreateSimplePackage("Some.Package", "4.9.2", "net8.0", [(null, [("Some.Transitive.Dependency", "[4.9.2]")])]), // should update to this
                 MockNuGetPackage.CreateSimplePackage("Some.Package", "4.9.3", "net8.0", [(null, [("Some.Transitive.Dependency", "[4.9.3]")])]), // will not update this far
@@ -303,6 +343,50 @@ public partial class AnalyzeWorkerTests : AnalyzeWorkerTestBase
                 CanUpdate = false,
                 VersionComesFromMultiDependencyProperty = false,
                 UpdatedDependencies = [],
+            }
+        );
+    }
+
+    [Fact]
+    public async Task IgnoredVersionsCanHandleWildcardSpecification()
+    {
+        await TestAnalyzeAsync(
+            packages:
+            [
+                MockNuGetPackage.CreateSimplePackage("Some.Package", "1.0.0", "net8.0"), // initially this
+                MockNuGetPackage.CreateSimplePackage("Some.Package", "1.1.0", "net8.0"), // should update to this
+                MockNuGetPackage.CreateSimplePackage("Some.Package", "1.2.0", "net8.0"), // `IgnoredVersions` should prevent this from being selected
+            ],
+            discovery: new()
+            {
+                Path = "/",
+                Projects = [
+                    new()
+                    {
+                        FilePath = "./project.csproj",
+                        TargetFrameworks = ["net8.0"],
+                        Dependencies = [
+                            new("Some.Package", "1.0.0", DependencyType.PackageReference),
+                        ],
+                    },
+                ],
+            },
+            dependencyInfo: new()
+            {
+                Name = "Some.Package",
+                Version = "1.0.0",
+                IgnoredVersions = [Requirement.Parse("> 1.1.*")],
+                IsVulnerable = false,
+                Vulnerabilities = [],
+            },
+            expectedResult: new()
+            {
+                UpdatedVersion = "1.1.0",
+                CanUpdate = true,
+                VersionComesFromMultiDependencyProperty = false,
+                UpdatedDependencies = [
+                    new("Some.Package", "1.1.0", DependencyType.Unknown, TargetFrameworks: ["net8.0"]),
+                ],
             }
         );
     }
@@ -655,7 +739,7 @@ public partial class AnalyzeWorkerTests : AnalyzeWorkerTestBase
             ErrorDetails = "<some package feed>",
             UpdatedVersion = "",
             UpdatedDependencies = [],
-        }, new Logger(false));
+        }, new TestLogger());
         var discoveryContents = await File.ReadAllTextAsync(Path.Combine(temporaryDirectory.DirectoryPath, "Some.Dependency.json"));
 
         // raw result file should look like this:
